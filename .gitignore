@@ -1,0 +1,20 @@
+# Local reference materials and intermediate files
+/sources/
+/tmp/
+.DS_Store
+
+# Secrets; the example file may be versioned
+.env
+.env.*
+!.env.example
+
+# Dependencies, build output and generated reports
+node_modules/
+.next/
+dist/
+out/
+coverage/
+playwright-report/
+test-results/
+*.log
+*.tsbuildinfo

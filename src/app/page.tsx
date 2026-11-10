@@ -29,7 +29,7 @@ function Circle({ assessments, recording, index, intro }: { assessments: (Assess
   const circumference = 2 * Math.PI * 108;
   const dash = circumference / 4 - 11;
   const percent = completion(assessments);
-  return <div className={`orb-wrap ${recording ? "is-recording" : ""}`} aria-label={`Полнота брифа: ${percent}%`} role="img">
+  return <div className={`orb-wrap ${recording ? "is-recording" : ""}`} aria-label={intro ? "Четыре вопроса о вакансии" : `Полнота брифа: ${percent}%`} role="img">
     <div className="orb-glow" />
     <svg className="orb-svg" viewBox="0 0 260 260" aria-hidden="true">
       {questions.map((_, i) => <g key={i} transform={`rotate(${-90 + i * 90} 130 130)`}>
@@ -39,10 +39,9 @@ function Circle({ assessments, recording, index, intro }: { assessments: (Assess
     </svg>
     <div className="orb-center">
       <span className="orb-symbol"><Icon name="mic" size={27}/></span>
-      <span className="orb-number">{intro ? "04" : `${percent}%`}</span>
-      <span className="orb-label">{intro ? "ВОПРОСА" : recording ? "ИДЁТ ЗАПИСЬ" : "ЗАПОЛНЕНО"}</span>
+      <span className="orb-number">{intro ? "4" : `${percent}%`}</span>
+      <span className="orb-label">{intro ? "вопроса" : recording ? "идёт запись" : "полнота брифа"}</span>
     </div>
-    <span className="orb-caption">{intro ? "ВАШ БУДУЩИЙ СОТРУДНИК" : `ВОПРОС ${String(index + 1).padStart(2, "0")} / 04`}</span>
   </div>;
 }
 
@@ -172,26 +171,88 @@ export default function Home() {
   const percent = completion(assessments);
 
   return <main className="app-shell">
-    <header className="header"><a href="/" className="brand" aria-label="Лаб ПИИ — начало"><span className="brand-mark">л<span>.</span></span><span className="brand-name">ЛАБ ПИИ <i>/</i> НАЙМ</span></a><div className="header-right"><span className="header-dot"/> УМНЫЙ БРИФ <span className="header-separator"/> <span className="header-muted">BETA / 01</span></div></header>
+    <header className="header">
+      <div className="header-inner">
+        <a href="/" className="brand" aria-label="Лаб ПИИ — на главную">Лаб ПИИ</a>
+        <span className="header-divider" aria-hidden="true" />
+        <span className="header-title">Создание вакансии</span>
+      </div>
+    </header>
+
     <div className="workspace">
-      <div className="topline"><span>ПРОСТРАНСТВО НАЙМА <span className="slash">/</span> НОВАЯ ВАКАНСИЯ</span><span className="topline-right">ДЛЯ ТЕХ, КТО СОЗДАЁТ КОМАНДЫ</span></div>
       {screen === "intro" && <section className="hero-grid" aria-labelledby="intro-title">
-        <div className="hero-copy"><div className="eyebrow"><span className="small-diamond"/> ВАКАНСИЯ НАЧИНАЕТСЯ С РАЗГОВОРА</div><h1 id="intro-title">Расскажите о роли.<br/><em>Мы соберём</em><br/>вакансию.</h1><p className="lead">Вы знаете, кто нужен вашей команде. Просто расскажите об этом — мы поможем превратить ваши мысли в понятное описание вакансии.</p><label className="role-label" htmlFor="role">КОГО ИЩЕМ? <span>НЕОБЯЗАТЕЛЬНО</span></label><input id="role" className="role-input" value={role} onChange={e => { setRole(e.target.value); if (result) setStale(true); }} maxLength={200} placeholder="Например, менеджера проектов"/><button className="button primary start-button" onClick={() => setScreen("interview")}>Начать разговор <Icon name="arrow"/></button><p className="privacy-note"><span className="lock-icon">◇</span> 4 вопроса · Голос или текст · Обработка в OpenAI</p></div>
-        <div className="hero-visual"><Circle assessments={assessments} recording={false} index={0} intro/><div className="visual-foot"><span>01 / 04</span><span>ОТ ИДЕИ К ВАКАНСИИ</span></div></div>
-      </section>}
-      {screen === "interview" && <section className="interview-grid" aria-labelledby="question-title">
-        <div className="question-column"><div className="eyebrow"><span className="small-diamond"/> РАССКАЖИТЕ О БУДУЩЕМ СОТРУДНИКЕ</div><div className="step-marker"><span>ВОПРОС</span><strong>{String(index + 1).padStart(2, "0")}</strong><span className="step-of">/ 04</span></div><h1 id="question-title" className="question-title">{questions[index].title}</h1><p className="question-hint">{questions[index].hint}</p>
-          <div className="answer-card"><div className="answer-heading"><label htmlFor="answer">ВАШ ОТВЕТ</label><span>{voice === "transcribing" ? "РАСПОЗНАЁМ РЕЧЬ..." : voice === "recording" ? "● ЗАПИСЫВАЕМ" : "МОЖНО ИСПРАВИТЬ"}</span></div><textarea id="answer" value={answers[index]} maxLength={6000} disabled={locked} onChange={e => updateAnswer(e.target.value)} placeholder={questions[index].example} rows={4}/><div className="answer-footer"><span>{answers[index].length} / 6000</span><span>ГОЛОС ИЛИ ТЕКСТ</span></div></div>
-          {assessment && <div className={`feedback ${assessment.status}`} role="status"><span className="feedback-icon">{assessment.status === "complete" ? "✓" : "✳"}</span><div><strong>{assessment.status === "complete" ? "Ответ раскрыт" : "Можно добавить"}</strong><p>{assessment.feedback}{assessment.clarification ? ` ${assessment.clarification}` : ""}</p></div></div>}
-          {error && <p className="error" role="alert">{error}</p>}
-          <div className="actions"><button className="button secondary" onClick={previous} disabled={locked}><Icon name="back"/> Назад</button>{assessment ? <button className="button primary" onClick={next} disabled={locked}>{index === 3 ? "Проверить ответы" : "Продолжить"} <Icon name="arrow"/></button> : <button className="button primary" onClick={analyze} disabled={locked || !answers[index].trim()}>{busy ? "Проверяем..." : "Проверить ответ"} <Icon name="arrow"/></button>}</div>
-          {(!assessment || analysisFailed) && <button className="text-button skip" onClick={next} disabled={locked}>{analysisFailed ? "Продолжить без проверки" : "Пропустить вопрос"} →</button>}
+        <div className="hero-copy">
+          <p className="eyebrow">Вакансия голосом</p>
+          <h1 id="intro-title">Создайте вакансию по вашим ответам</h1>
+          <p className="lead">Ответьте на 4 вопроса о работе сотрудника. Мы подготовим черновик вакансии, который можно проверить и отредактировать.</p>
+          <div className="role-field">
+            <label className="role-label" htmlFor="role">Название должности <span>необязательно</span></label>
+            <input id="role" className="role-input" value={role} onChange={e => { setRole(e.target.value); if (result) setStale(true); }} maxLength={200} placeholder="Например, менеджер проектов" />
+          </div>
+          <button className="button primary start-button" onClick={() => setScreen("interview")}>Ответить на вопросы <Icon name="arrow" /></button>
+          <p className="privacy-note">Можно отвечать голосом или текстом. Аудио и ответы обрабатывает OpenAI.</p>
         </div>
-        <div className="interview-visual"><Circle assessments={assessments} recording={voice === "recording"} index={index} intro={false}/><button className={`record-button ${voice === "recording" ? "recording" : ""}`} onClick={voice === "recording" ? stopRecording : startRecording} disabled={busy || voice === "requesting" || voice === "transcribing"}><span className="record-icon">{voice === "recording" ? <span className="stop-square"/> : <Icon name="mic"/>}</span><span>{voice === "requesting" ? "Ожидаем доступ..." : voice === "recording" ? "Остановить запись" : voice === "transcribing" ? "Распознаём..." : "Ответить голосом"}</span></button>{voice === "requesting" ? <button className="text-button" onClick={() => { micRequest.current++; setVoice("idle"); setError("Запрос отменён. Вы можете ввести ответ текстом."); }}>Отменить запрос</button> : <p className="record-caption">{voice === "recording" ? "ГОВОРИТЕ, МЫ ВАС СЛУШАЕМ" : "НАЖМИТЕ, КОГДА БУДЕТЕ ГОТОВЫ"}</p>}<div className="visual-foot"><span>{String(index + 1).padStart(2, "0")} / 04</span><span>ОДИН ВОПРОС ЗА РАЗ</span></div></div>
+        <div className="hero-visual"><Circle assessments={assessments} recording={false} index={0} intro /></div>
       </section>}
-      {screen === "review" && <section className="review-screen"><div className="eyebrow"><span className="small-diamond"/> ПОСЛЕДНИЙ ШАГ</div><div className="review-heading"><div><h1>Всё верно?<br/><em>Посмотрите ответы.</em></h1><p className="lead">Проверьте, что мы правильно записали ваши мысли. Если что-то забыли, можно вернуться и дополнить.</p></div><div className="review-progress"><strong>{percent}%</strong><span>ПОЛНОТА БРИФА</span></div></div><div className="review-list">{questions.map((q, i) => <button key={q.title} className="review-row" onClick={() => { setIndex(i); setScreen("interview"); setError(""); }}><span className="review-num">0{i + 1}</span><span><strong>{q.title}</strong><small>{answers[i].trim() || "Пока нет ответа"}</small></span><span className="review-edit">ИЗМЕНИТЬ ↗</span></button>)}</div>{error && <p className="error" role="alert">{error}</p>}<div className="actions review-actions"><button className="button secondary" onClick={() => { setIndex(3); setScreen("interview"); }} disabled={busy}><Icon name="back"/> Назад</button><button className="button primary" onClick={generate} disabled={busy}>{busy ? "Собираем вакансию..." : "Создать вакансию"} <Icon name="arrow"/></button>{result && <button className="text-button" onClick={() => { setScreen("result"); setError(""); }} disabled={busy}>Вернуться к черновику</button>}</div><p className="review-note">Недостающие сведения отметим в черновике — их можно уточнить позже.</p></section>}
-      {screen === "result" && <section className="result-screen"><div className="eyebrow"><span className="small-diamond"/> ГОТОВО К ПРОВЕРКЕ</div><div className="result-heading"><div><h1>Ваша вакансия.<br/><em>Первый черновик.</em></h1><p className="lead">Мы собрали описание из ваших ответов. Прочитайте и отредактируйте текст перед тем, как поделиться им.</p></div><span className="result-stamp"><Icon name="check" size={28}/></span></div>{stale && <p className="stale" role="status">Вы изменили ответы. Обновите черновик, чтобы он учитывал изменения.</p>}<div className="result-card"><div className="result-card-head"><span>ОПИСАНИЕ ВАКАНСИИ</span><span>МОЖНО РЕДАКТИРОВАТЬ</span></div><textarea aria-label="Редактируемое описание вакансии" value={result} onChange={e => { setResult(e.target.value); setEdited(true); }} rows={16}/><div className="result-card-foot"><span>ЧЕРНОВИК / 01</span><span>СОЗДАНО НА ОСНОВЕ ВАШИХ ОТВЕТОВ</span></div></div>{error && <p className="error" role="alert">{error}</p>}<div className="result-actions"><button className="button primary" onClick={copy}><Icon name="copy"/> {copied ? "Скопировано" : "Скопировать текст"}</button><button className="button secondary" onClick={download}><Icon name="download"/> Скачать .txt</button><button className="text-button" onClick={() => { setScreen("review"); setError(""); }}>← Вернуться к ответам</button></div><div className="result-bottom"><p>Проверьте формулировки и добавьте условия, которых пока нет в брифе.</p><button className="text-button" onClick={reset}>Начать заново ↗</button></div></section>}
+
+      {screen === "interview" && <section className="interview-grid" aria-labelledby="question-title">
+        <div className="question-column">
+          <p className="eyebrow">Вопрос {index + 1} из 4</p>
+          <h1 id="question-title" className="question-title">{questions[index].title}</h1>
+          <p className="question-hint">{questions[index].hint}</p>
+          <div className="voice-control">
+            <button className={`record-button ${voice === "recording" ? "recording" : ""}`} onClick={voice === "recording" ? stopRecording : startRecording} disabled={busy || voice === "requesting" || voice === "transcribing"}>
+              <span className="record-icon">{voice === "recording" ? <span className="stop-square" /> : <Icon name="mic" />}</span>
+              <span>{voice === "requesting" ? "Ждём доступ к микрофону…" : voice === "recording" ? "Остановить запись" : voice === "transcribing" ? "Распознаём запись…" : answers[index] ? "Записать заново" : "Записать ответ"}</span>
+            </button>
+            {voice === "requesting" && <button className="text-button cancel-request" onClick={() => { micRequest.current++; setVoice("idle"); setError("Запрос отменён. Можно ввести ответ текстом."); }}>Отменить запрос</button>}
+            {voice === "recording" && <p className="record-caption" role="status">Остановите запись, когда закончите ответ.</p>}
+          </div>
+          <div className="answer-card">
+            <div className="answer-heading"><label htmlFor="answer">Ответ</label><span>{voice === "transcribing" ? "Распознаём запись…" : voice === "recording" ? "Идёт запись" : "Текст можно исправить"}</span></div>
+            <textarea id="answer" value={answers[index]} maxLength={6000} disabled={locked} onChange={e => updateAnswer(e.target.value)} placeholder={questions[index].example} rows={5} />
+            <div className="answer-footer"><span>{answers[index].length} / 6000</span></div>
+          </div>
+          {assessment && <div className={`feedback ${assessment.status}`} role="status"><span className="feedback-icon" aria-hidden="true">{assessment.status === "complete" ? "✓" : "!"}</span><div><strong>{assessment.status === "complete" ? "Ответ учтён" : "Ответ можно дополнить"}</strong><p>{assessment.feedback}{assessment.clarification ? ` ${assessment.clarification}` : ""}</p></div></div>}
+          {error && <p className="error" role="alert">{error}</p>}
+          <div className="actions">
+            <button className="button secondary" onClick={previous} disabled={locked}><Icon name="back" /> Назад</button>
+            {assessment ? <button className="button primary" onClick={next} disabled={locked}>{index === 3 ? "Проверить ответы" : "Продолжить"} <Icon name="arrow" /></button> : <button className="button primary" onClick={analyze} disabled={locked || !answers[index].trim()}>{busy ? "Проверяем…" : "Проверить ответ"} <Icon name="arrow" /></button>}
+          </div>
+          {(!assessment || analysisFailed) && <button className="text-button skip" onClick={next} disabled={locked}>{analysisFailed ? "Продолжить без проверки" : "Пропустить вопрос"}</button>}
+        </div>
+        <aside className="interview-visual" aria-label="Прогресс ответов">
+          <Circle assessments={assessments} recording={voice === "recording"} index={index} intro={false} />
+          <p className="visual-description">Круг показывает, насколько подробно вы ответили на 4 вопроса.</p>
+        </aside>
+      </section>}
+
+      {screen === "review" && <section className="review-screen" aria-labelledby="review-title">
+        <p className="eyebrow">Все вопросы</p>
+        <div className="review-heading">
+          <div><h1 id="review-title">Проверьте ответы</h1><p className="lead">Если в ответе ошибка или не хватает деталей, вернитесь к вопросу и исправьте текст.</p></div>
+          <div className="review-progress"><strong>{percent}%</strong><span>полнота брифа</span></div>
+        </div>
+        <div className="review-list">{questions.map((q, i) => <button key={q.title} className="review-row" onClick={() => { setIndex(i); setScreen("interview"); setError(""); }}><span className="review-num">{i + 1}</span><span><strong>{q.title}</strong><small>{answers[i].trim() || "Нет ответа"}</small></span><span className="review-edit">Изменить</span></button>)}</div>
+        {error && <p className="error" role="alert">{error}</p>}
+        <div className="actions review-actions">
+          <button className="button secondary" onClick={() => { setIndex(3); setScreen("interview"); }} disabled={busy}><Icon name="back" /> Назад</button>
+          <button className="button primary" onClick={generate} disabled={busy}>{busy ? "Готовим вакансию…" : "Создать вакансию"} <Icon name="arrow" /></button>
+          {result && <button className="text-button" onClick={() => { setScreen("result"); setError(""); }} disabled={busy}>Вернуться к черновику</button>}
+        </div>
+        <p className="review-note">Недостающие сведения отметим в черновике.</p>
+      </section>}
+
+      {screen === "result" && <section className="result-screen" aria-labelledby="result-title">
+        <p className="eyebrow">Вакансия</p>
+        <div className="result-heading"><div><h1 id="result-title">Черновик вакансии</h1><p className="lead">Проверьте текст и добавьте условия, о которых не рассказали в ответах.</p></div></div>
+        {stale && <p className="stale" role="status">Ответы изменились. Создайте вакансию заново, чтобы обновить текст.</p>}
+        <div className="result-card"><div className="result-card-head"><label htmlFor="result-text">Описание вакансии</label><span>Можно редактировать</span></div><textarea id="result-text" value={result} onChange={e => { setResult(e.target.value); setEdited(true); }} rows={16} /></div>
+        {error && <p className="error" role="alert">{error}</p>}
+        <div className="result-actions"><button className="button primary" onClick={copy}><Icon name="copy" /> {copied ? "Скопировано" : "Скопировать текст"}</button><button className="button secondary" onClick={download}><Icon name="download" /> Скачать .txt</button><button className="text-button" onClick={() => { setScreen("review"); setError(""); }}>Вернуться к ответам</button></div>
+        <div className="result-bottom"><p>Проверьте должность, обязанности и условия перед публикацией.</p><button className="text-button" onClick={reset}>Создать новую вакансию</button></div>
+      </section>}
     </div>
-    <footer className="footer"><span>ЛАБ ПИИ <i>/</i> НАЙМ</span><span>СОЗДАНО ДЛЯ ОСМЫСЛЕННОГО НАЙМА <span className="footer-star">✳</span></span></footer>
+    <footer className="footer"><div>Лаб ПИИ <span>·</span> Вакансия голосом</div></footer>
   </main>;
 }

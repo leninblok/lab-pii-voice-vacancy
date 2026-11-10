@@ -78,7 +78,9 @@ export function normalizeText(value: string): string {
     if (index % 2 === 1) return part;
     return part
       .replace(/(?<![\d.,])(\d{4,})(?= *(?:₽|руб(?:\.|лей|ля)?)(?=$|[\s,.]))/giu, number => number.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0"))
-      .replace(/(?<![\p{L}\p{N}_/.:@-])([АаВвИиКкОоСсУу]|[Вв]о|[Нн]а|[Нн]е|[Нн]и|[Пп]о|[Ии]з|[Зз]а|[Оо]т|[Дд]о) +(?=[\p{L}\p{N}«„])/gu, "$1\u00a0")
+      // Keep all common short Russian prepositions and conjunctions with the
+      // following word. URLs, email addresses and code were split out above.
+      .replace(/(?<![\p{L}\p{N}_/.:@-])([АаВвИиКкОоСсУу]|[Вв]о|[Кк]о|[Оо]б|[Оо]бо|[Сс]о|[Ии]з|[Зз]а|[Нн]а|[Пп]о|[Оо]т|[Дд]о|[Дд]ля|[Нн]ад|[Пп]од|[Пп]ри|[Бб]ез) +(?=[\p{L}\p{N}«„])/gu, "$1\u00a0")
       .replace(/(№) *(?=\d)/gu, "$1\u00a0")
       .replace(/(?<![\p{L}\p{N}])([0-9]+(?:[.,][0-9]+)?) *(%|₽)(?![\p{L}\p{N}])/gu, "$1\u00a0$2")
       .replace(/(?<![\p{L}\p{N}])([0-9]+(?:[.,][0-9]+)?) +(руб(?:\.|лей|ля)?|кг|км|мл|л|час(?:ов|а)?|мин(?:ут|уты|\.)?)(?=$|[\s.,;:!?])/giu, "$1\u00a0$2");

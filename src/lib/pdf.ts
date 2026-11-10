@@ -1,33 +1,87 @@
-import { PDFDocument, rgb, type PDFPage } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
 import type { DocumentData } from "./vacancy";
 
-export function splitPdfWords(paragraph: string): string[] { return paragraph.split(/[ \t]+/).filter(Boolean); }
-
-export async function createPdf(data: DocumentData, fontBytes: ArrayBuffer | Uint8Array): Promise<Uint8Array> {
-  const pdf = await PDFDocument.create(); pdf.registerFontkit(fontkit);
-  const font = await pdf.embedFont(fontBytes, { subset: true });
-  const width = 595.28, height = 841.89, left = 64, right = 64, bottom = 64, maxWidth = width - left - right;
-  let page: PDFPage = pdf.addPage([width, height]); let y = height - 70;
-  const nextPage = () => { page = pdf.addPage([width, height]); y = height - 70; };
-  const wrap = (text: string, size: number, indent = 0): string[] => {
-    const out: string[] = []; for (const paragraph of text.split("\n")) { const words = splitPdfWords(paragraph); let line = ""; for (const word of words) { const candidate = line ? `${line} ${word}` : word; if (line && font.widthOfTextAtSize(candidate, size) > maxWidth - indent) { out.push(line); line = word; } else line = candidate; } out.push(line); } return out;
-  };
-  const line = (text: string, size: number, indent = 0) => { if (y < bottom + size * 1.5) nextPage(); page.drawText(text, {x: left + indent, y, size, font, color: rgb(.12,.12,.12)}); y -= size * 1.5; };
-  const drawText = (text: string, size: number, indent = 0) => { for (const l of wrap(text,size,indent)) line(l,size,indent); };
-  if (data.title.trim()) { drawText(data.title, 24); y -= 14; }
-  for (let i = 0; i < data.blocks.length; i++) {
-    const block = data.blocks[i]; if (!block.text.trim()) continue;
-    if (block.type === "heading") { const needed = 21 * 1.5 * (wrap(block.text, 15).length + 2); if (y - needed < bottom) nextPage(); y -= 12; drawText(block.text, 15); y -= 3; }
-    else if (block.type === "list") { for (const item of block.text.split("\n").filter(Boolean)) { const lines = wrap(item, 11, 16); if (y - lines.length * 16.5 < bottom && lines.length * 16.5 < height - 140) nextPage(); if (y < bottom + 20) nextPage(); page.drawText("•", { x:left, y, size:11, font }); for (const l of lines) line(l,11,16); y -= 3; } y -= 8; }
-    else { drawText(block.text,11); y -= 10; }
-  }
-  const pages = pdf.getPages(); if (pages.length > 1) pages.forEach((p, i) => { const label = String(i + 1); p.drawText(label, {x: width - right - font.widthOfTextAtSize(label,9), y: 36, size: 9, font, color: rgb(.45,.45,.45)}); });
-  return pdf.save();
+/** Readable and portable: the vacancy title and its latest edit date. */
+export function pdfFilename(document: DocumentData, updatedAt = Date.now()): string {
+  const title = document.title
+    .replace(/[\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 90) || "Без названия";
+  const date = new Date(updatedAt);
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `Вакансия — ${title} — ${day}.${month}.${date.getFullYear()}.pdf`;
 }
-export async function downloadPdf(document: DocumentData): Promise<void> {
-  const response = await fetch("/fonts/IBMPlexSans-Regular.ttf"); if (!response.ok) throw new Error("FONT_UNAVAILABLE");
-  const bytes = await createPdf(document, await response.arrayBuffer());
-  const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" }); const url = URL.createObjectURL(blob);
-  const a = window.document.createElement("a"); a.href = url; a.download = "vacancy.pdf"; window.document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+function escapeHtml(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** The same elements and classes that VacancyEditor renders on screen. */
+export function printDocumentHtml(document: DocumentData): string {
+  const blocks = document.blocks.map(block => {
+    if (block.type === "heading") return `<h2 class="vacancy-editor__heading">${escapeHtml(block.text)}</h2>`;
+    if (block.type === "list") return `<ul class="vacancy-editor__list">${block.text.split("\n").filter(Boolean).map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+    return `<p class="vacancy-editor__paragraph">${escapeHtml(block.text)}</p>`;
+  }).join("");
+  return `<article class="vacancy-editor print-vacancy"><h1 class="vacancy-editor__title">${escapeHtml(document.title)}</h1>${blocks}</article>`;
+}
+
+function cssWithAbsoluteUrls(css: string, stylesheetUrl: string) {
+  return css.replace(/url\((['"]?)([^'")]+)\1\)/g, (full, quote: string, value: string) => {
+    if (/^(?:data:|https?:|#|blob:)/i.test(value)) return full;
+    return `url(${quote}${new URL(value, stylesheetUrl).href}${quote})`;
+  });
+}
+
+/**
+ * A print popup has the about:blank origin. Linking a compiled stylesheet into
+ * it makes relative font URLs resolve against about:blank, which silently
+ * falls back to Times. Fetch the same styles from the app and inline them.
+ */
+async function sourceStyles() {
+  const nodes = Array.from(window.document.querySelectorAll<HTMLLinkElement | HTMLStyleElement>('link[rel="stylesheet"], style'));
+  const styles = await Promise.all(nodes.map(async node => {
+    if (node instanceof HTMLStyleElement) return node.textContent || "";
+    try {
+      const response = await fetch(node.href);
+      if (!response.ok) throw new Error("Could not load stylesheet");
+      return cssWithAbsoluteUrls(await response.text(), node.href);
+    } catch {
+      // A linked fallback is still useful for third-party stylesheets.
+      return `@import url("${node.href}");`;
+    }
+  }));
+  return `<style>${styles.join("\n").replace(/<\/style/gi, "<\\/style")}</style>`;
+}
+
+/**
+ * Browser printing uses the identical Inter font, list markers and CSS metrics
+ * as the editor. The browser owns the final Save as PDF dialog.
+ */
+export function printPdf(document: DocumentData, updatedAt?: number): void {
+  const popup = window.open("", "_blank");
+  if (!popup) throw new Error("PRINT_WINDOW_BLOCKED");
+  const name = pdfFilename(document, updatedAt).replace(/\.pdf$/i, "");
+  void sourceStyles().then(styles => {
+    if (popup.closed) return;
+    popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${escapeHtml(name)}</title>${styles}<style>
+    @page { size: A4; margin: 10mm; }
+    html, body { min-height: 0 !important; background: #fff !important; }
+    body { margin: 0 !important; color: var(--ink, #050505) !important; }
+    .print-document { width: min(720px, 100%); margin: 0 auto; padding-top: 0; }
+    .print-vacancy { min-height: 0 !important; }
+    @media print {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .print-document { break-inside: auto; }
+    }
+  </style></head><body><main class="print-document">${printDocumentHtml(document)}</main></body></html>`);
+    popup.document.close();
+    const openDialog = () => {
+      popup.focus();
+      popup.addEventListener("afterprint", () => popup.close(), { once: true });
+      popup.print();
+    };
+    void (popup.document.fonts?.ready ?? Promise.resolve()).then(() => window.setTimeout(openDialog, 0));
+  }).catch(() => popup.close());
 }

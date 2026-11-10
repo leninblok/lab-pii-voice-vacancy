@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Вакансия голосом — Лаб ПИИ",
-  description: "Расскажите о будущей роли — и получите черновик вакансии."
+  title: "Вакансия голосом",
+  description: "Расскажите о работе и создайте понятную вакансию."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

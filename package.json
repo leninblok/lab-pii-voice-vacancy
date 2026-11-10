@@ -10,7 +10,10 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "lucide-react": "^1.71.0",
     "next": "16.4.6",
+    "pdf-lib": "^1.17.1",
     "react": "19.2.5",
     "react-dom": "19.2.5"
   },

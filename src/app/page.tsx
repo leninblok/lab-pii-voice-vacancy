@@ -1,258 +1,227 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { completion, questions, type Assessment } from "@/lib/questions";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowUp, Check, Copy, Download, Mic, PanelLeftClose, PanelLeftOpen, Plus, Redo2, RotateCcw, Undo2, X } from "lucide-react";
+import { VoiceWave } from "@/components/VoiceWave";
+import VacancyEditor from "@/components/VacancyEditor";
+import { TOPICS, LABELS, QUESTIONS, EXAMPLE_VACANCY_ID, exampleVacancy, initialDocument, isSufficient, allTopicsSufficient, snapshot, prune, plainDescription, htmlDescription, shouldStartFresh, validDocument, validScores, type Topic, type Vacancy, type DocumentData, type Scores } from "@/lib/vacancy";
 
-type Screen = "intro" | "interview" | "review" | "result";
-type VoiceState = "idle" | "requesting" | "recording" | "transcribing";
-const emptyAnswers = () => ["", "", "", ""];
-const emptyAssessments = (): (Assessment | null)[] => [null, null, null, null];
-
-function Icon({ name, size = 20 }: { name: string; size?: number }) {
-  const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true as const };
-  if (name === "mic") return <svg {...common}><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3m-3 0h6"/></svg>;
-  if (name === "arrow") return <svg {...common}><path d="M4 12h15m-5-5 5 5-5 5"/></svg>;
-  if (name === "back") return <svg {...common}><path d="M20 12H5m5-5-5 5 5 5"/></svg>;
-  if (name === "check") return <svg {...common}><path d="m5 12 4 4L19 6"/></svg>;
-  if (name === "copy") return <svg {...common}><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>;
-  return <svg {...common}><path d="M12 3v12m-4-4 4 4 4-4M5 18v2h14v-2"/></svg>;
+type Update = { document: DocumentData; scores: Scores; activeTopic: Topic | null; question: string; changedBlockIds: string[]; revision: number; operationId: string };
+type Retry = { text: string; audio?: Blob; transcript?: string; vacancyId: string | null; revision: number; duration: number };
+const STORE = "voice-vacancies-v2";
+const LAST = "voice-vacancies-last";
+const makeId = () => crypto.randomUUID();
+const THINKING_BARS = Array.from({ length: 68 }, (_, index) => index);
+const QUESTION_HELP: Record<Topic, string> = {
+  tasks: "Назовите регулярные задачи, частоту и контекст. Например: «Каждое утро проверять входную группу и поддерживать порядок»",
+  project: "Опишите результат, срок и масштаб. Например: «За первые шесть месяцев запустить новый раздел и проверить его на клиентах»",
+  future: "Расскажите, что изменится после этого этапа. Например: «После запуска человек возьмёт на себя развитие продукта»",
+  skills: "Назовите знания и инструменты, без которых не обойтись. Например: «Уверенно работать в Figma и проводить интервью»",
+};
+const COMPLETE_HELP = "Основное уже есть — проверьте текст и добавьте то, что важно кандидату: условия, формат работы, команду или оплату";
+function formatUpdatedAt(timestamp: number) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDifference = Math.round((startOfToday - startOfDate) / 86_400_000);
+  const time = date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  if (dayDifference === 0) return `Сегодня, ${time}`;
+  if (dayDifference === 1) return `Вчера, ${time}`;
+  const month = date.toLocaleDateString("ru-RU", { month: "long" });
+  return date.getFullYear() === now.getFullYear()
+    ? `${date.getDate()} ${month}, ${time}`
+    : `${date.getDate()} ${month} ${date.getFullYear()}, ${time}`;
 }
-
-async function fetchData(url: string, options: RequestInit): Promise<Record<string, unknown>> {
-  const response = await fetch(url, options);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof data.error === "string" ? data.error : "Что-то пошло не так. Попробуйте ещё раз.");
-  return data;
+async function sendJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Не удалось обработать ответ. Попробуйте ещё раз.");
+  return data as T;
 }
-
-function Circle({ assessments, recording, index, intro }: { assessments: (Assessment | null)[]; recording: boolean; index: number; intro: boolean }) {
-  const circumference = 2 * Math.PI * 108;
-  const dash = circumference / 4 - 11;
-  const percent = completion(assessments);
-  return <div className={`orb-wrap ${recording ? "is-recording" : ""}`} aria-label={intro ? "Четыре вопроса о вакансии" : `Полнота брифа: ${percent}%`} role="img">
-    <div className="orb-glow" />
-    <svg className="orb-svg" viewBox="0 0 260 260" aria-hidden="true">
-      {questions.map((_, i) => <g key={i} transform={`rotate(${-90 + i * 90} 130 130)`}>
-        <circle cx="130" cy="130" r="108" className="orb-track" strokeDasharray={`${dash} ${circumference}`} />
-        <circle cx="130" cy="130" r="108" className="orb-progress" strokeDasharray={`${dash * (assessments[i]?.status === "complete" ? 1 : assessments[i]?.status === "partial" ? .5 : 0)} ${circumference}`} />
-      </g>)}
-    </svg>
-    <div className="orb-center">
-      <span className="orb-symbol"><Icon name="mic" size={27}/></span>
-      <span className="orb-number">{intro ? "4" : `${percent}%`}</span>
-      <span className="orb-label">{intro ? "вопроса" : recording ? "идёт запись" : "полнота брифа"}</span>
-    </div>
-  </div>;
+function AutoField({ value, onChange, className, label, disabled, placeholder, onKeyDown }: {value: string; onChange: (s: string) => void; className?: string; label: string; disabled?: boolean; placeholder?: string; onKeyDown?: React.KeyboardEventHandler<HTMLTextAreaElement>}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const field = ref.current;
+    if (!field) return;
+    const resize = () => {
+      // Measure without a scrollbar; browser rounding can otherwise show one
+      // even for an empty, single-line field.
+      field.style.overflowY = "hidden";
+      field.style.height = "auto";
+      const maxHeight = Number.parseFloat(getComputedStyle(field).maxHeight) || 132;
+      const contentHeight = field.scrollHeight;
+      field.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+      if (contentHeight > maxHeight + 1) field.style.overflowY = "auto";
+    };
+    resize();
+    let width = field.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (field.clientWidth === width) return;
+      width = field.clientWidth;
+      resize();
+    });
+    observer.observe(field);
+    return () => observer.disconnect();
+  }, [value]);
+  return <textarea ref={ref} rows={1} className={className} aria-label={label} value={value} disabled={disabled} placeholder={placeholder} onChange={e => onChange(e.target.value)} onKeyDown={onKeyDown} />;
 }
-
 export default function Home() {
-  const [screen, setScreen] = useState<Screen>("intro");
-  const [index, setIndex] = useState(0);
-  const [role, setRole] = useState("");
-  const [answers, setAnswers] = useState<string[]>(emptyAnswers);
-  const [assessments, setAssessments] = useState<(Assessment | null)[]>(emptyAssessments);
-  const [voice, setVoice] = useState<VoiceState>("idle");
+  const [vacancies, setVacancies] = useState<Vacancy[]>([]);
+  const [currentId, setCurrentId] = useState<string | null>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const [resumeId, setResumeId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [drawer, setDrawer] = useState(false);
+  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [result, setResult] = useState("");
-  const [stale, setStale] = useState(false);
-  const [edited, setEdited] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [analysisFailed, setAnalysisFailed] = useState(false);
-  const streamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const revisions = useRef([0, 0, 0, 0]);
-  const mounted = useRef(true);
-  const micRequest = useRef(0);
-
-  const releaseMic = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = null;
-    streamRef.current?.getTracks().forEach(track => track.stop());
-    streamRef.current = null;
+  const [processingLabel, setProcessingLabel] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [retry, setRetry] = useState<Retry | null>(null);
+  const [notice, setNotice] = useState("");
+  const [completedAction, setCompletedAction] = useState<"copy" | "pdf" | null>(null);
+  const [enteringDocument, setEnteringDocument] = useState(false);
+  const [leavingStart, setLeavingStart] = useState(false);
+  const [changed, setChanged] = useState<string[]>([]);
+  const changeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const actionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const entryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startTransitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const records = useRef<Vacancy[]>([]); const idRef = useRef<string | null>(null);
+  const busyRef = useRef(false); const generation = useRef(0); const analysis = useRef<AbortController | null>(null);
+  const recorder = useRef<MediaRecorder | null>(null); const stream = useRef<MediaStream | null>(null); const audioContext = useRef<AudioContext | null>(null);
+  const chunks = useRef<Blob[]>([]); const heardSpeech = useRef(false); const cancelled = useRef(false); const timer = useRef<ReturnType<typeof setInterval> | null>(null); const analyserRef = useRef<AnalyserNode | null>(null); const timeRef = useRef(0);
+  const typingGroup = useRef<{id: string; at: number} | null>(null); const inputRef = useRef("");
+  const current = vacancies.find(v => v.id === currentId) || null;
+  const interviewComplete = !!current && allTopicsSufficient(current.scores);
+  useEffect(() => { inputRef.current = text; }, [text]);
+  useEffect(() => {
+    const element = composerRef.current;
+    if (!element || !currentId) return;
+    const updateHeight = () => document.documentElement.style.setProperty("--composer-height", `${element.getBoundingClientRect().height}px`);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight); observer.observe(element);
+    return () => { observer.disconnect(); document.documentElement.style.removeProperty("--composer-height"); };
+  }, [currentId]);
+  const persist = useCallback((items: Vacancy[]) => { records.current = items; setVacancies(items); try { localStorage.setItem(STORE, JSON.stringify(items)); } catch { setNotice("Не удалось сохранить вакансию в браузере. Освободите место и попробуйте снова."); } }, []);
+  const select = useCallback((id: string | null) => { cancelled.current = true; if (recorder.current?.state === "recording") recorder.current.stop(); generation.current++; analysis.current?.abort(); if (changeTimer.current) clearTimeout(changeTimer.current); if (entryTimer.current) clearTimeout(entryTimer.current); setEnteringDocument(false); setLeavingStart(false); setChanged([]); idRef.current = id; setCurrentId(id); setResumeId(null); setRetry(null); setNotice(""); try { if (id) localStorage.setItem(LAST, id); } catch { setNotice("Не удалось сохранить выбор вакансии в браузере."); } }, []);
+  useEffect(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORE) || "[]");
+      const items: Vacancy[] = Array.isArray(parsed) ? parsed.filter(v => v && typeof v.id === "string" && validDocument(v.document) && validScores(v.scores) && (v.activeTopic === null || TOPICS.includes(v.activeTopic)) && typeof v.question === "string" && Number.isInteger(v.revision) && typeof v.createdAt === "number" && typeof v.updatedAt === "number" && Array.isArray(v.undo) && Array.isArray(v.redo) && Array.isArray(v.manuallyEdited)).map(v => ({...v, undo: prune(v.undo), redo: prune(v.redo)})) : [];
+      const withExample = items.some(v => v.id === EXAMPLE_VACANCY_ID) ? items : [...items, exampleVacancy()];
+      records.current = withExample; setVacancies(withExample);
+      if (withExample !== items) localStorage.setItem(STORE, JSON.stringify(withExample));
+      const last = withExample.find(v => v.id === localStorage.getItem(LAST));
+      if (last) { if (shouldStartFresh(last)) setResumeId(last.id); else { idRef.current = last.id; setCurrentId(last.id); } }
+    } catch { setNotice("Не удалось прочитать сохранённые вакансии в этом браузере."); }
+    setLoaded(true);
   }, []);
-
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; micRequest.current++; if (recorderRef.current?.state === "recording") recorderRef.current.stop(); releaseMic(); }; }, [releaseMic]);
-
-  const updateAnswer = (value: string, target = index) => {
-    revisions.current[target]++;
-    setAnswers(old => old.map((item, i) => i === target ? value : item));
-    setAssessments(old => old.map((item, i) => i === target ? null : item));
-    if (result) setStale(true);
-    setAnalysisFailed(false);
-    setError("");
-  };
-
+  const updateRecord = useCallback((id: string, fn: (v: Vacancy) => Vacancy) => { const items = records.current.map(v => v.id === id ? fn(v) : v); persist(items); }, [persist]);
+  const stopMedia = useCallback(() => { if (timer.current) clearInterval(timer.current); timer.current = null; analyserRef.current = null; stream.current?.getTracks().forEach(t => t.stop()); stream.current = null; void audioContext.current?.close(); audioContext.current = null; setRecording(false); }, []);
+  const cancelRecording = () => { if (!recording) return; cancelled.current = true; if (recorder.current?.state === "recording") recorder.current.stop(); };
+  const submitRecording = () => { if (recording && recorder.current?.state === "recording") recorder.current.stop(); };
+  useEffect(() => () => { cancelled.current = true; if (recorder.current?.state === "recording") recorder.current.stop(); stopMedia(); analysis.current?.abort(); if (changeTimer.current) clearTimeout(changeTimer.current); if (actionTimer.current) clearTimeout(actionTimer.current); if (entryTimer.current) clearTimeout(entryTimer.current); }, [stopMedia]);
+  const submit = useCallback(async (attempt: Retry) => {
+    if (busyRef.current) return;
+    const base = attempt.vacancyId ? records.current.find(v => v.id === attempt.vacancyId) : null;
+    if ((attempt.vacancyId && (!base || idRef.current !== attempt.vacancyId || base.revision !== attempt.revision)) || (!attempt.vacancyId && idRef.current)) { setRetry(attempt); setNotice("Ответ не отправлен: вакансия изменилась во время обработки. Попробуйте ещё раз."); return; }
+    busyRef.current = true; setBusy(true); setProcessingLabel(attempt.audio && !attempt.transcript ? "Расшифровываем запись…" : "Обрабатываем ответ…"); setNotice(""); analysis.current?.abort(); const gen = ++generation.current; let transcript = attempt.transcript;
+    try {
+      if (attempt.audio && !transcript) {
+        const form = new FormData(); form.set("audio", attempt.audio, attempt.audio.type.includes("mp4") ? "answer.m4a" : "answer.webm");
+        const response = await fetch("/api/transcribe", { method: "POST", body: form }); const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || "Не удалось распознать запись. Попробуйте ещё раз.");
+        transcript = body.text;
+      }
+      const operationId = makeId(); const result = await sendJson<Update>("/api/update", { document: base?.document || initialDocument(), message: [attempt.text.trim(), transcript?.trim()].filter(Boolean).join("\n"), activeTopic: base?.activeTopic || "tasks", previousQuestion: base?.question || "", manuallyEdited: base?.manuallyEdited || [], revision: attempt.revision, operationId, mode: "update" });
+      const latest = base && records.current.find(v => v.id === base.id);
+      const stale = generation.current !== gen || result.operationId !== operationId || result.revision !== attempt.revision || (base && (!latest || latest.revision !== base.revision || idRef.current !== base.id)) || (!base && idRef.current);
+      if (stale) {
+        if (idRef.current === attempt.vacancyId) {
+          setRetry({ ...attempt, transcript });
+          setNotice("Ответ не отправлен: документ изменился во время обработки. Повторите отправку.");
+        }
+        return;
+      }
+      const unchanged = base && base.document.title === result.document.title && JSON.stringify(base.document.blocks) === JSON.stringify(result.document.blocks);
+      if (unchanged) throw new Error("Не удалось добавить ответ в вакансию. Повторите отправку.");
+      if (!base) {
+        setLeavingStart(true);
+        await new Promise<void>(resolve => { startTransitionTimer.current = setTimeout(() => { startTransitionTimer.current = null; resolve(); }, 260); });
+        if (generation.current !== gen || idRef.current) return;
+      }
+      const now = Date.now();
+      const vacancy: Vacancy = base ? { ...base, document: result.document, scores: result.scores, activeTopic: result.activeTopic, question: result.question, revision: base.revision + 1, updatedAt: now, undo: prune([...base.undo, snapshot(base)]), redo: [] } : { id: makeId(), document: result.document, scores: result.scores, activeTopic: result.activeTopic, question: result.question, revision: 1, manuallyEdited: [], undo: [], redo: [], createdAt: now, updatedAt: now };
+      persist(base ? records.current.map(v => v.id === base.id ? vacancy : v) : [vacancy, ...records.current]);
+      if (!base) { idRef.current = vacancy.id; setCurrentId(vacancy.id); setResumeId(null); setEnteringDocument(true); if (entryTimer.current) clearTimeout(entryTimer.current); entryTimer.current = setTimeout(() => setEnteringDocument(false), 520); try { localStorage.setItem(LAST, vacancy.id); } catch { setNotice("Не удалось сохранить выбор вакансии в браузере."); } }
+      if (inputRef.current === attempt.text) setText(""); setRetry(previous => previous && previous.text === attempt.text && previous.audio === attempt.audio ? null : previous);
+      if (changeTimer.current) clearTimeout(changeTimer.current);
+      setChanged([...result.changedBlockIds, ...(!base || base.document.title !== result.document.title ? ["title"] : [])]);
+      changeTimer.current = setTimeout(() => setChanged([]), 2600);
+    } catch (error) {
+      if (generation.current === gen) { setRetry({ ...attempt, transcript }); setNotice(error instanceof Error ? error.message : "Не удалось обработать ответ. Попробуйте ещё раз."); }
+    } finally { busyRef.current = false; setBusy(false); setProcessingLabel(""); setLeavingStart(false); }
+  }, [persist]);
+  const sendText = () => { if (!text.trim() || busyRef.current || recording) return; const v = records.current.find(x => x.id === idRef.current); void submit({ text, vacancyId: v?.id || null, revision: v?.revision || 0, duration: 0 }); };
   const startRecording = async () => {
-    setError("");
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      setError("Браузер не поддерживает запись. Вы можете ввести ответ текстом."); return;
-    }
-    setVoice("requesting");
-    const requestId = ++micRequest.current;
+    if (busyRef.current) return; setNotice("");
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") { setNotice("Запись недоступна в этом браузере. Напишите ответ."); return; }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (!mounted.current || requestId !== micRequest.current) { stream.getTracks().forEach(t => t.stop()); return; }
-      streamRef.current = stream;
-      const candidates = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"];
-      const mimeType = candidates.find(type => MediaRecorder.isTypeSupported(type));
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-      recorderRef.current = recorder;
-      const chunks: Blob[] = [];
-      const questionIndex = index;
-      const version = revisions.current[questionIndex];
-      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-      recorder.onerror = () => { releaseMic(); if (mounted.current) { setVoice("idle"); setError("Не удалось записать ответ. Попробуйте ещё раз или введите текст."); } };
-      recorder.onstop = async () => {
-        releaseMic(); recorderRef.current = null;
-        if (!mounted.current) return;
-        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-        if (!blob.size) { setVoice("idle"); setError("Запись получилась пустой. Попробуйте ещё раз."); return; }
-        if (blob.size > 3_800_000) { setVoice("idle"); setError("Запись слишком большая. Попробуйте ответить короче."); return; }
-        setVoice("transcribing");
-        try {
-          const form = new FormData();
-          form.append("audio", blob, recorder.mimeType.includes("mp4") ? "answer.m4a" : "answer.webm");
-          const data = await fetchData("/api/transcribe", { method: "POST", body: form });
-          if (mounted.current && revisions.current[questionIndex] === version && typeof data.text === "string") updateAnswer(data.text, questionIndex);
-        } catch (err) { if (mounted.current) setError(err instanceof Error ? err.message : "Не удалось распознать запись."); }
-        finally { if (mounted.current) setVoice("idle"); }
-      };
-      recorder.start(); setVoice("recording");
-      timerRef.current = setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 120000);
-    } catch {
-      if (requestId !== micRequest.current || !mounted.current) return;
-      releaseMic(); setVoice("idle");
-      setError("Нет доступа к микрофону. Разрешите его в настройках браузера или введите ответ текстом.");
-    }
+      const media = await navigator.mediaDevices.getUserMedia({ audio: true }); stream.current = media; cancelled.current = false; chunks.current = []; heardSpeech.current = false; timeRef.current = 0;
+      const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find(x => MediaRecorder.isTypeSupported(x));
+      const rec = mime ? new MediaRecorder(media, { mimeType: mime }) : new MediaRecorder(media); recorder.current = rec;
+      rec.ondataavailable = e => { if (e.data.size) chunks.current.push(e.data); };
+      rec.onstop = () => { const blob = new Blob(chunks.current, {type: rec.mimeType || "audio/webm"}); const duration = timeRef.current; stopMedia(); if (!cancelled.current && blob.size && !heardSpeech.current) { setNotice("Не удалось услышать речь. Проверьте микрофон и повторите запись."); return; } if (!cancelled.current && blob.size) { const v = records.current.find(x => x.id === idRef.current); void submit({text: inputRef.current, audio: blob, vacancyId: v?.id || null, revision: v?.revision || 0, duration}); } };
+      const ctx = new AudioContext(); audioContext.current = ctx; const analyser = ctx.createAnalyser(); analyser.fftSize = 256; ctx.createMediaStreamSource(media).connect(analyser); analyserRef.current = analyser;
+      rec.start(); setRecording(true); timer.current = setInterval(() => { timeRef.current++; if (timeRef.current >= 120 && rec.state === "recording") rec.stop(); }, 1000);
+    } catch { stopMedia(); setNotice("Нет доступа к микрофону. Разрешите запись в браузере или напишите ответ."); }
   };
-
-  const stopRecording = () => { if (recorderRef.current?.state === "recording") recorderRef.current.stop(); };
-  const analyze = async () => {
-    setError(""); setAnalysisFailed(false); setBusy(true);
-    const current = index; const version = revisions.current[current];
-    try {
-      const data = await fetchData("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ questionId: current + 1, answer: answers[current] }) });
-      if (revisions.current[current] !== version) return;
-      if (!["empty", "partial", "complete"].includes(String(data.status)) || typeof data.feedback !== "string" || typeof data.clarification !== "string") throw new Error("Не удалось проверить ответ. Попробуйте ещё раз.");
-      const checked: Assessment = { status: data.status as Assessment["status"], feedback: data.feedback, clarification: data.clarification };
-      setAssessments(old => old.map((item, i) => i === current ? checked : item));
-    } catch (err) { setAnalysisFailed(true); setError(err instanceof Error ? err.message : "Не удалось проверить ответ."); }
-    finally { setBusy(false); }
+  const editDocument = (document: DocumentData, changedIds: string[]) => {
+    if (!current || busyRef.current || !changedIds.length) return;
+    setChanged([]);
+    generation.current++; analysis.current?.abort();
+    const now = Date.now(); const group = typingGroup.current;
+    const grouped = group?.id === current.id && now - group.at < 1200;
+    typingGroup.current = { id: current.id, at: now };
+    updateRecord(current.id, v => ({...v, document, revision: v.revision + 1, updatedAt: now, manuallyEdited: [...new Set([...v.manuallyEdited, ...changedIds])], undo: grouped ? v.undo : prune([...v.undo, snapshot(v)]), redo: []}));
   };
-  const next = () => { setError(""); setAnalysisFailed(false); if (index < 3) setIndex(index + 1); else setScreen("review"); };
-  const previous = () => { setError(""); setAnalysisFailed(false); if (index > 0) setIndex(index - 1); else setScreen("intro"); };
-  const generate = async () => {
-    if (!answers.some(a => a.trim())) { setError("Добавьте хотя бы один ответ, чтобы подготовить вакансию."); return; }
-    if (edited && !window.confirm("Новый текст заменит ваши правки. Продолжить?")) return;
-    setBusy(true); setError("");
-    try {
-      const data = await fetchData("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, answers }) });
-      if (typeof data.text !== "string" || !data.text.trim()) throw new Error("Не удалось подготовить текст. Попробуйте ещё раз.");
-      setResult(data.text); setEdited(false); setStale(false); setScreen("result");
-    } catch (err) { setError(err instanceof Error ? err.message : "Не удалось подготовить вакансию."); }
-    finally { setBusy(false); }
-  };
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(result); setCopied(true); setTimeout(() => setCopied(false), 2500); }
-    catch { setError("Не удалось скопировать. Выделите текст и скопируйте его вручную."); }
-  };
-  const download = () => {
-    const url = URL.createObjectURL(new Blob([result], { type: "text/plain;charset=utf-8" }));
-    const link = document.createElement("a"); link.href = url; link.download = "vacancy.txt"; link.click(); URL.revokeObjectURL(url);
-  };
-  const reset = () => {
-    if (!window.confirm("Начать заново? Текущие ответы и текст удалятся.")) return;
-    setAnswers(emptyAnswers()); setAssessments(emptyAssessments()); setRole(""); setResult(""); setEdited(false); setStale(false); setIndex(0); setError(""); revisions.current = [0, 0, 0, 0]; setScreen("intro");
-  };
-  const locked = busy || voice !== "idle";
-  const assessment = assessments[index];
-  const percent = completion(assessments);
-
-  return <main className="app-shell">
-    <header className="header">
-      <div className="header-inner">
-        <a href="/" className="brand" aria-label="Лаб ПИИ — на главную">Лаб ПИИ</a>
-        <span className="header-divider" aria-hidden="true" />
-        <span className="header-title">Создание вакансии</span>
-      </div>
-    </header>
-
+  useEffect(() => {
+    if (!current || !typingGroup.current || busy) return;
+    const id = current.id; const revision = current.revision; const handle = setTimeout(async () => {
+      const latest = records.current.find(v => v.id === id); if (!latest || latest.revision !== revision) return;
+      const controller = new AbortController(); analysis.current = controller; const operationId = makeId();
+      try { const data = await sendJson<Update>("/api/update", {document: latest.document, message: "", activeTopic: latest.activeTopic, previousQuestion: latest.question, manuallyEdited: latest.manuallyEdited, revision, operationId, mode: "analyze"}, controller.signal);
+        if (controller.signal.aborted || idRef.current !== id || data.operationId !== operationId) return;
+        const now = records.current.find(v => v.id === id); if (!now || now.revision !== revision) return;
+        updateRecord(id, v => ({...v, scores: data.scores, activeTopic: data.activeTopic, question: data.question}));
+      } catch { /* Текст уже сохранён; анализ повторится после следующей правки. */ }
+    }, 1000); return () => clearTimeout(handle);
+  }, [current?.id, current?.revision, busy, updateRecord]);
+  const travel = (direction: "undo" | "redo") => { if (!current || busyRef.current) return; typingGroup.current = null; generation.current++; analysis.current?.abort(); setChanged([]); updateRecord(current.id, v => { const source = prune(v[direction]); const target = source.at(-1); if (!target) return v; const other = direction === "undo" ? "redo" : "undo"; return {...v, document: target.document, scores: target.scores, activeTopic: target.activeTopic, question: target.question, revision: v.revision + 1, updatedAt: Date.now(), [direction]: source.slice(0,-1), [other]: prune([...v[other], snapshot(v)])}; }); };
+  useEffect(() => { const handle = (e: KeyboardEvent) => { if (e.key === "Escape" && recording) { e.preventDefault(); cancelRecording(); return; } if (e.key === "Enter" && recording && !busy) { e.preventDefault(); submitRecording(); return; } if (e.key === "Escape" && drawer) { setDrawer(false); return; } const el = e.target as HTMLElement; if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable) return; if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); travel(e.shiftKey ? "redo" : "undo"); } else if (e.ctrlKey && e.key.toLowerCase() === "y") { e.preventDefault(); travel("redo"); } }; window.addEventListener("keydown", handle); return () => window.removeEventListener("keydown", handle); });
+  const markExport = (v: Vacancy) => updateRecord(v.id, x => x.revision === v.revision ? {...x, lastSuccessfulExportAt: Date.now(), lastExportedRevision: x.revision} : x);
+  const showCompletedAction = (action: "copy" | "pdf") => { setCompletedAction(action); if (actionTimer.current) clearTimeout(actionTimer.current); actionTimer.current = setTimeout(() => setCompletedAction(null), 1800); };
+  const discardRetry = () => { setRetry(null); setNotice(""); };
+  const repeatRetry = () => { const v = records.current.find(x => x.id === idRef.current); if (!retry) return; if (retry.vacancyId === (v?.id || null)) void submit({...retry, revision: v?.revision || 0}); else setNotice("Откройте вакансию, к которой относится ответ."); };
+  const copy = async () => { if (!current) return; setNotice(""); const plain = plainDescription(current.document); if (!plain.trim()) { setNotice("Описания для копирования пока нет."); return; } try { if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write) await navigator.clipboard.write([new ClipboardItem({"text/plain": new Blob([plain], {type:"text/plain"}), "text/html": new Blob([htmlDescription(current.document)], {type:"text/html"})})]); else await navigator.clipboard.writeText(plain); markExport(current); showCompletedAction("copy"); } catch { try { await navigator.clipboard.writeText(plain); markExport(current); showCompletedAction("copy"); } catch { setNotice("Не удалось скопировать. Выделите текст и скопируйте его вручную."); } } };
+  const pdf = async () => { if (!current) return; setNotice(""); try { const { downloadPdf } = await import("@/lib/pdf"); await downloadPdf(current.document); markExport(current); showCompletedAction("pdf"); } catch { setNotice("Не удалось подготовить PDF. Попробуйте ещё раз."); } };
+  const chooseTopic = (topic: Topic) => { if (!current || busy) return; updateRecord(current.id, v => ({...v, activeTopic: topic, question: QUESTIONS[topic]})); };
+  if (!loaded) return null;
+  return <main className={`app ${current ? "has-document" : ""} ${drawer ? "sidebar-open" : ""}`}>
+    {(current || vacancies.length > 0) && <aside id="vacancy-sidebar" className="drawer" aria-label="Вакансии" aria-hidden={!drawer} inert={!drawer}>
+      <div className="drawer-head"><h2>Вакансии</h2></div>
+      <button className="new-vacancy" onClick={() => select(null)}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Новая вакансия</button>
+      {[...vacancies].sort((a,b) => b.updatedAt-a.updatedAt).map(v => <button key={v.id} className="vacancy-link" aria-current={currentId === v.id ? "page" : undefined} onClick={() => select(v.id)}><span>{v.document.title || "Без названия"}</span><small>{v.id === EXAMPLE_VACANCY_ID ? "Пример для редактирования" : formatUpdatedAt(v.updatedAt)}</small></button>)}
+    </aside>}
     <div className="workspace">
-      {screen === "intro" && <section className="hero-grid" aria-labelledby="intro-title">
-        <div className="hero-copy">
-          <p className="eyebrow">Вакансия голосом</p>
-          <h1 id="intro-title">Создайте вакансию по вашим ответам</h1>
-          <p className="lead">Ответьте на 4 вопроса о работе сотрудника. Мы подготовим черновик вакансии, который можно проверить и отредактировать.</p>
-          <div className="role-field">
-            <label className="role-label" htmlFor="role">Название должности <span>необязательно</span></label>
-            <input id="role" className="role-input" value={role} onChange={e => { setRole(e.target.value); if (result) setStale(true); }} maxLength={200} placeholder="Например, менеджер проектов" />
-          </div>
-          <button className="button primary start-button" onClick={() => setScreen("interview")}>Ответить на вопросы <Icon name="arrow" /></button>
-          <p className="privacy-note">Можно отвечать голосом или текстом. Аудио и ответы обрабатывает OpenAI.</p>
-        </div>
-        <div className="hero-visual"><Circle assessments={assessments} recording={false} index={0} intro /></div>
-      </section>}
-
-      {screen === "interview" && <section className="interview-grid" aria-labelledby="question-title">
-        <div className="question-column">
-          <p className="eyebrow">Вопрос {index + 1} из 4</p>
-          <h1 id="question-title" className="question-title">{questions[index].title}</h1>
-          <p className="question-hint">{questions[index].hint}</p>
-          <div className="voice-control">
-            <button className={`record-button ${voice === "recording" ? "recording" : ""}`} onClick={voice === "recording" ? stopRecording : startRecording} disabled={busy || voice === "requesting" || voice === "transcribing"}>
-              <span className="record-icon">{voice === "recording" ? <span className="stop-square" /> : <Icon name="mic" />}</span>
-              <span>{voice === "requesting" ? "Ждём доступ к микрофону…" : voice === "recording" ? "Остановить запись" : voice === "transcribing" ? "Распознаём запись…" : answers[index] ? "Записать заново" : "Записать ответ"}</span>
-            </button>
-            {voice === "requesting" && <button className="text-button cancel-request" onClick={() => { micRequest.current++; setVoice("idle"); setError("Запрос отменён. Можно ввести ответ текстом."); }}>Отменить запрос</button>}
-            {voice === "recording" && <p className="record-caption" role="status">Остановите запись, когда закончите ответ.</p>}
-          </div>
-          <div className="answer-card">
-            <div className="answer-heading"><label htmlFor="answer">Ответ</label><span>{voice === "transcribing" ? "Распознаём запись…" : voice === "recording" ? "Идёт запись" : "Текст можно исправить"}</span></div>
-            <textarea id="answer" value={answers[index]} maxLength={6000} disabled={locked} onChange={e => updateAnswer(e.target.value)} placeholder={questions[index].example} rows={5} />
-            <div className="answer-footer"><span>{answers[index].length} / 6000</span></div>
-          </div>
-          {assessment && <div className={`feedback ${assessment.status}`} role="status"><span className="feedback-icon" aria-hidden="true">{assessment.status === "complete" ? "✓" : "!"}</span><div><strong>{assessment.status === "complete" ? "Ответ учтён" : "Ответ можно дополнить"}</strong><p>{assessment.feedback}{assessment.clarification ? ` ${assessment.clarification}` : ""}</p></div></div>}
-          {error && <p className="error" role="alert">{error}</p>}
-          <div className="actions">
-            <button className="button secondary" onClick={previous} disabled={locked}><Icon name="back" /> Назад</button>
-            {assessment ? <button className="button primary" onClick={next} disabled={locked}>{index === 3 ? "Проверить ответы" : "Продолжить"} <Icon name="arrow" /></button> : <button className="button primary" onClick={analyze} disabled={locked || !answers[index].trim()}>{busy ? "Проверяем…" : "Проверить ответ"} <Icon name="arrow" /></button>}
-          </div>
-          {(!assessment || analysisFailed) && <button className="text-button skip" onClick={next} disabled={locked}>{analysisFailed ? "Продолжить без проверки" : "Пропустить вопрос"}</button>}
-        </div>
-        <aside className="interview-visual" aria-label="Прогресс ответов">
-          <Circle assessments={assessments} recording={voice === "recording"} index={index} intro={false} />
-          <p className="visual-description">Круг показывает, насколько подробно вы ответили на 4 вопроса.</p>
-        </aside>
-      </section>}
-
-      {screen === "review" && <section className="review-screen" aria-labelledby="review-title">
-        <p className="eyebrow">Все вопросы</p>
-        <div className="review-heading">
-          <div><h1 id="review-title">Проверьте ответы</h1><p className="lead">Если в ответе ошибка или не хватает деталей, вернитесь к вопросу и исправьте текст.</p></div>
-          <div className="review-progress"><strong>{percent}%</strong><span>полнота брифа</span></div>
-        </div>
-        <div className="review-list">{questions.map((q, i) => <button key={q.title} className="review-row" onClick={() => { setIndex(i); setScreen("interview"); setError(""); }}><span className="review-num">{i + 1}</span><span><strong>{q.title}</strong><small>{answers[i].trim() || "Нет ответа"}</small></span><span className="review-edit">Изменить</span></button>)}</div>
-        {error && <p className="error" role="alert">{error}</p>}
-        <div className="actions review-actions">
-          <button className="button secondary" onClick={() => { setIndex(3); setScreen("interview"); }} disabled={busy}><Icon name="back" /> Назад</button>
-          <button className="button primary" onClick={generate} disabled={busy}>{busy ? "Готовим вакансию…" : "Создать вакансию"} <Icon name="arrow" /></button>
-          {result && <button className="text-button" onClick={() => { setScreen("result"); setError(""); }} disabled={busy}>Вернуться к черновику</button>}
-        </div>
-        <p className="review-note">Недостающие сведения отметим в черновике.</p>
-      </section>}
-
-      {screen === "result" && <section className="result-screen" aria-labelledby="result-title">
-        <p className="eyebrow">Вакансия</p>
-        <div className="result-heading"><div><h1 id="result-title">Черновик вакансии</h1><p className="lead">Проверьте текст и добавьте условия, о которых не рассказали в ответах.</p></div></div>
-        {stale && <p className="stale" role="status">Ответы изменились. Создайте вакансию заново, чтобы обновить текст.</p>}
-        <div className="result-card"><div className="result-card-head"><label htmlFor="result-text">Описание вакансии</label><span>Можно редактировать</span></div><textarea id="result-text" value={result} onChange={e => { setResult(e.target.value); setEdited(true); }} rows={16} /></div>
-        {error && <p className="error" role="alert">{error}</p>}
-        <div className="result-actions"><button className="button primary" onClick={copy}><Icon name="copy" /> {copied ? "Скопировано" : "Скопировать текст"}</button><button className="button secondary" onClick={download}><Icon name="download" /> Скачать .txt</button><button className="text-button" onClick={() => { setScreen("review"); setError(""); }}>Вернуться к ответам</button></div>
-        <div className="result-bottom"><p>Проверьте должность, обязанности и условия перед публикацией.</p><button className="text-button" onClick={reset}>Создать новую вакансию</button></div>
-      </section>}
+      {(current || vacancies.length > 0) && <header className="topbar"><div className="topbar-inner"><button className={`icon-button sidebar-toggle ${drawer ? "is-open" : ""}`} onClick={() => setDrawer(open => !open)} aria-controls="vacancy-sidebar" aria-expanded={drawer} aria-label={drawer ? "Скрыть панель вакансий" : "Открыть панель вакансий"} title={drawer ? "Скрыть панель вакансий" : "Открыть панель вакансий"}><PanelLeftOpen className="sidebar-toggle__open" size={18} strokeWidth={1.7} aria-hidden="true" /><PanelLeftClose className="sidebar-toggle__close" size={18} strokeWidth={1.7} aria-hidden="true" /></button>{current && <div className="actions"><span className="sr-only" role="status">{completedAction === "copy" ? "Описание скопировано" : completedAction === "pdf" ? "PDF подготовлен" : ""}</span><button onClick={() => travel("undo")} disabled={!current.undo.length || busy} aria-label="Отменить изменение" title="Отменить"><Undo2 size={18} strokeWidth={1.7} aria-hidden="true" /></button><button onClick={() => travel("redo")} disabled={!current.redo.length || busy} aria-label="Повторить изменение" title="Повторить"><Redo2 size={18} strokeWidth={1.7} aria-hidden="true" /></button><button className={completedAction === "copy" ? "is-complete" : undefined} onClick={copy} aria-label={completedAction === "copy" ? "Описание скопировано" : "Скопировать описание вакансии"} title={completedAction === "copy" ? "Описание скопировано" : "Скопировать"}>{completedAction === "copy" ? <Check size={18} strokeWidth={1.9} aria-hidden="true" /> : <Copy size={18} strokeWidth={1.7} aria-hidden="true" />}</button><button className={`${interviewComplete ? "pdf-action is-accented" : "pdf-action"}${completedAction === "pdf" ? " is-complete" : ""}`} onClick={pdf} aria-label={completedAction === "pdf" ? "PDF подготовлен" : "Скачать PDF"} title={completedAction === "pdf" ? "PDF подготовлен" : "Скачать PDF"}>{completedAction === "pdf" ? <Check size={18} strokeWidth={1.9} aria-hidden="true" /> : <Download size={18} strokeWidth={1.7} aria-hidden="true" />}</button></div>}</div></header>}
+    {!current ? <section className={`welcome ${leavingStart ? "is-leaving" : ""}`}><h1>Расскажите,<br />кого вы ищете?</h1><p className="intro">Расскажите о будущей работе как получится — мы проведём по шагам, подскажем, что уточнить, и соберём понятную вакансию. В конце сможете отредактировать текст и скачать PDF</p>{resumeId && <button className="resume" onClick={() => select(resumeId)}>Продолжить: {vacancies.find(v => v.id === resumeId)?.document.title || "вакансия"} →</button>}</section> : <div className={`document ${enteringDocument ? "is-entering" : ""}`}><VacancyEditor document={current.document} documentId={current.id} disabled={busy} changedIds={changed} onChange={editDocument} /></div>}
+    <section className={`${current ? "composer fixed" : "composer initial"} ${interviewComplete ? "is-complete" : "is-active"} ${!current && text.trim() ? "has-text" : ""} ${enteringDocument ? "is-entering-document" : ""} ${leavingStart ? "is-leaving" : ""}`} aria-label="Ответ"><div className="composer-inner" ref={composerRef}>
+      {current && <><div className="topics" aria-label="Темы">{TOPICS.map(t => { const complete = isSufficient(current.scores[t]); return <button key={t} className={`topic ${current.activeTopic === t && !complete ? "active" : ""} ${complete ? "is-complete" : ""}`} onClick={() => chooseTopic(t)} disabled={busy || complete} aria-pressed={!complete && current.activeTopic === t} aria-label={complete ? `${LABELS[t]} — заполнено` : LABELS[t]}><span className="topic-label">{LABELS[t]}{complete && <Check className="topic-check" size={14} strokeWidth={2} aria-hidden="true" />}</span><span className="track"><span style={{transform: `scaleX(${complete ? 1 : Math.max(0, Math.min(100, current.scores[t].score)) / 100})`}} /></span></button>; })}</div><div className="question-context"><div className="question"><span>{interviewComplete ? "Вакансия готова" : current.question || (current.activeTopic ? QUESTIONS[current.activeTopic] : "Расскажите подробнее о работе")}</span></div><p className="question-support">{interviewComplete ? COMPLETE_HELP : current.activeTopic ? QUESTION_HELP[current.activeTopic] : "Расскажите о том, что ещё важно кандидату"}</p></div></>}
+      <div className={`input-row ${recording ? "is-recording" : ""} ${busy ? "is-busy" : ""} ${recording || busy ? "has-wave" : ""} ${retry && !busy ? "has-retry" : ""}`} aria-busy={busy}>{recording || busy ? <><button className="cancel-recording wave-control" disabled={busy} onClick={cancelRecording} aria-label="Сбросить запись" aria-keyshortcuts="Escape" title="Сбросить запись — Esc"><X size={18} strokeWidth={1.8} aria-hidden="true" /></button><div className={`recording-inline ${busy ? "is-analyzing" : ""}`} role="status" aria-label={busy ? processingLabel : "Идёт запись"}>{busy ? <><span className="sr-only">{processingLabel}</span><span className="thinking-wave" aria-hidden="true">{THINKING_BARS.map(index => <i key={index} />)}</span></> : <VoiceWave analyser={analyserRef.current} onSignal={amplitude => { if (amplitude > .003) heardSpeech.current = true; }} />}</div><button className="recording-send wave-control" disabled={busy} onClick={submitRecording} aria-label="Отправить голосовой ответ" aria-keyshortcuts="Enter" title="Отправить голосовой ответ — Enter"><ArrowUp size={19} strokeWidth={1.8} aria-hidden="true" /></button></> : retry ? <><button className="retry-reset" onClick={discardRetry} aria-label="Сбросить неотправленный ответ" title="Сбросить ответ"><X size={18} strokeWidth={1.8} aria-hidden="true" /></button><span className="retry-message"><b>Ответ не отправлен</b><small>{notice || "Проверьте подключение и попробуйте ещё раз."}</small></span><button className="retry-send" onClick={repeatRetry} aria-label="Повторить отправку" title="Повторить отправку"><RotateCcw size={18} strokeWidth={1.8} aria-hidden="true" /></button></> : <><AutoField label="Ответ" value={text} onChange={setText} disabled={busy} placeholder={current ? (interviewComplete ? "Добавьте важную деталь…" : "Ответьте или расскажите о другом…") : "Например, продуктового дизайнера"} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); sendText(); } }} /><div className="input-actions"><button className="mic" onClick={() => void startRecording()} disabled={busy} aria-label="Записать голосовой ответ" title="Записать голосовой ответ"><Mic size={19} strokeWidth={1.7} aria-hidden="true" /></button><button className="send" disabled={busy || !text.trim()} onClick={sendText} aria-label="Отправить ответ" aria-keyshortcuts="Enter" title="Отправить ответ — Enter"><ArrowUp size={19} strokeWidth={1.8} aria-hidden="true" /></button></div></>}</div>
+      {notice && !retry && <p className="notice" role="status">{notice}</p>}
+    </div></section>
     </div>
-    <footer className="footer"><div>Лаб ПИИ <span>·</span> Вакансия голосом</div></footer>
   </main>;
 }

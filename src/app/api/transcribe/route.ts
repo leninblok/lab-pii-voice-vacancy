@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { failure, limitRequest } from "@/lib/server";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 export async function POST(request: Request) {
   const limited = limitRequest(request); if (limited) return limited;

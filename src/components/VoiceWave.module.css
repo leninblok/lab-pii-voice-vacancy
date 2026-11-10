@@ -1,0 +1,30 @@
+.wave {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bar {
+  display: block;
+  width: 2px;
+  height: 20px;
+  flex: 0 0 2px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: .72;
+  transform: scaleY(.12);
+  transition: transform 150ms var(--ease-out, cubic-bezier(.23, 1, .32, 1));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar {
+    transform: scaleY(.24) !important;
+    transition: none;
+  }
+}
